@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Защищенный JWT чат</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 24px; max-width: 900px; }
+        h1 { margin-bottom: 8px; }
+        .row { display: flex; gap: 12px; margin-bottom: 10px; }
+        input { padding: 8px; width: 220px; }
+        button { padding: 8px 12px; cursor: pointer; }
+        #status { margin: 10px 0; color: #1f5f1f; }
+        #messages { border: 1px solid #ddd; border-radius: 6px; padding: 12px; height: 260px; overflow-y: auto; }
+        .msg { margin: 0 0 8px 0; }
+        .muted { color: #666; font-size: 12px; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <h1>SignalR чат с JWT</h1>
+    <p class="muted">Доступ к хабу есть только у авторизованных пользователей с токеном.</p>
+
+    <div class="row">
+        <input id="userName" placeholder="Логин" />
+        <input id="password" type="password" placeholder="Пароль" />
+        <button id="registerBtn">Регистрация</button>
+        <button id="loginBtn">Вход</button>
+        <button id="logoutBtn">Выход</button>
+    </div>
+
+    <div id="status">Не авторизован</div>
+
+    <div id="chatBlock" class="hidden">
+        <div class="row">
+            <input id="messageInput" placeholder="Сообщение" style="width: 500px;" />
+            <button id="sendBtn">Отправить</button>
+        </div>
+        <div id="messages"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
+    <script>
+        const statusEl = document.getElementById("status");
+        const messagesEl = document.getElementById("messages");
+        const chatBlock = document.getElementById("chatBlock");
+        const messageInput = document.getElementById("messageInput");
+        let connection = null;
+
+        function setStatus(text, isError = false) {
+            statusEl.textContent = text;
+            statusEl.style.color = isError ? "#a12424" : "#1f5f1f";
+        }
+
+        function getToken() {
+            return localStorage.getItem("access_token");
+        }
+
+        function addMessage(text) {
+            const p = document.createElement("p");
+            p.className = "msg";
+            p.textContent = text;
+            messagesEl.appendChild(p);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        async function apiPost(url, body) {
+            const response = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            return response.json();
+        }
+
+        async function connectToHub() {
+            if (connection) {
+                await connection.stop();
+            }
+
+            const token = getToken();
+            if (!token) {
+                chatBlock.classList.add("hidden");
+                return;
+            }
+
+            connection = new signalR.HubConnectionBuilder()
+                .withUrl("/chatHub", {
+                    accessTokenFactory: () => getToken()
+                })
+                .withAutomaticReconnect()
+                .build();
+
+            connection.on("ReceiveMessage", (user, message, time) => {
+                addMessage(`[${time}] ${user}: ${message}`);
+            });
+
+            try {
+                await connection.start();
+                chatBlock.classList.remove("hidden");
+                setStatus("Авторизован и подключен к хабу");
+                addMessage("Подключение к чату установлено.");
+            } catch (err) {
+                chatBlock.classList.add("hidden");
+                setStatus("Ошибка подключения к хабу (проверьте токен).", true);
+            }
+        }
+
+        document.getElementById("registerBtn").addEventListener("click", async () => {
+            const userName = document.getElementById("userName").value;
+            const password = document.getElementById("password").value;
+
+            try {
+                await apiPost("/api/auth/register", { userName, password });
+                setStatus("Регистрация успешна.");
+            } catch (err) {
+                setStatus("Ошибка регистрации.", true);
+            }
+        });
+
+        document.getElementById("loginBtn").addEventListener("click", async () => {
+            const userName = document.getElementById("userName").value;
+            const password = document.getElementById("password").value;
+
+            try {
+                const data = await apiPost("/api/auth/login", { userName, password });
+                localStorage.setItem("access_token", data.accessToken);
+                setStatus("Вход выполнен, токен сохранен.");
+                await connectToHub();
+            } catch (err) {
+                setStatus("Ошибка входа.", true);
+            }
+        });
+
+        document.getElementById("logoutBtn").addEventListener("click", async () => {
+            localStorage.removeItem("access_token");
+            if (connection) {
+                await connection.stop();
+            }
+            chatBlock.classList.add("hidden");
+            setStatus("Выход выполнен, токен удален.");
+        });
+
+        document.getElementById("sendBtn").addEventListener("click", async () => {
+            if (!connection) {
+                setStatus("Нет подключения к хабу.", true);
+                return;
+            }
+
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            try {
+                await connection.invoke("SendMessage", message);
+                messageInput.value = "";
+            } catch (err) {
+                setStatus("Не удалось отправить сообщение.", true);
+            }
+        });
+
+        connectToHub();
+    </script>
+</body>
+</html>
